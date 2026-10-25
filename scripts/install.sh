@@ -6,6 +6,7 @@
 #      X 小号凭证读 /opt/tweetpilot/secret/x-auth-token.txt（由电脑上传，不输出内容）。
 #   4. 凭证齐全才启动；否则只说明缺什么。
 # 用法：bash install.sh          安装或更新并启动
+#       bash install.sh --auto   定时自动更新（cron 调用）
 #       bash install.sh --status 查看运行状态和最近日志（不含任何凭证）
 set -euo pipefail
 
@@ -33,6 +34,7 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
     systemctl enable --now docker
 fi
 
+OLD_HEAD=$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo none)
 if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" fetch -q --depth 1 origin main
     git -C "$APP_DIR" reset -q --hard origin/main
@@ -43,7 +45,7 @@ else
 fi
 mkdir -p "$APP_DIR/secret" "$APP_DIR/data"
 chmod 700 "$APP_DIR/secret"
-echo "代码已更新到 $(git -C "$APP_DIR" rev-parse --short HEAD)"
+[ "${1:-}" = "--auto" ] || echo "代码已更新到 $(git -C "$APP_DIR" rev-parse --short HEAD)"
 
 yml_value() {  # 从 TrendPilot 配置读一个键的值，不输出到日志
     sed -n "s/^[[:space:]]*$1:[[:space:]]*[\"']\{0,1\}\([^\"'[:space:]#]*\).*/\1/p" "$TP_CONFIG" | head -1
@@ -54,7 +56,7 @@ missing=""
 [ -s "$TOKEN_FILE" ] || missing="$missing X 小号凭证"
 
 if [ -n "$missing" ]; then
-    echo "暂不启动，缺少：$missing"
+    [ "${1:-}" = "--auto" ] || echo "暂不启动，缺少：$missing"
     exit 0
 fi
 
@@ -67,6 +69,20 @@ umask 077
 } > "$APP_DIR/.env"
 
 cd "$APP_DIR"
+if [ "${1:-}" = "--auto" ]; then
+    # 定时自动更新：只有代码变了才重启监听，不重复拉镜像
+    docker compose up -d --remove-orphans >/dev/null 2>&1
+    if [ "$OLD_HEAD" != "$(git rev-parse HEAD)" ]; then
+        docker compose restart monitor >/dev/null && echo "$(date '+%F %T') 已更新到 $(git rev-parse --short HEAD) 并重启"
+    fi
+    exit 0
+fi
 docker compose pull -q
 docker compose up -d --remove-orphans
-echo "TweetPilot 已启动"
+docker compose restart monitor >/dev/null
+
+# 每 15 分钟自动从 GitHub 更新
+cat > /etc/cron.d/tweetpilot <<CRON
+*/15 * * * * root bash $APP_DIR/scripts/install.sh --auto >> $APP_DIR/data/update.log 2>&1
+CRON
+echo "TweetPilot 已启动，已设置每 15 分钟自动更新"

@@ -33,8 +33,21 @@ if [ "$MODE" = "--status" ]; then
     echo "监听账号：$(conf_value ACCOUNTS)"
     df -h / | tail -1
     docker compose ps
-    echo "---- 最近日志 ----"
-    docker compose logs --tail 30 monitor 2>&1 | grep -v -i "token" || true
+    echo "---- 读取测试（每个账号最近的推文数）----"
+    docker compose exec -T monitor python - <<'PY' 2>&1 | grep -v -i -E "auth_token|bot[0-9]+:" || true
+import monitor as m
+for a in m.ACCOUNTS:
+    try:
+        items = m.parse_feed(m.http_get(m.feed_url(a), timeout=60))
+        print(f"{a}: 读到 {len(items)} 条" + (f"，最新 {m.format_pub(items[0]['pub'])} {items[0]['link']}" if items else ""))
+    except Exception as e:
+        body = getattr(e, "read", lambda: b"")()[:300].decode("utf-8", "replace")
+        print(f"{a}: 失败 {e} {body}")
+PY
+    echo "---- 监听日志 ----"
+    docker compose logs --tail 30 monitor 2>&1 | grep -v -i -E "auth_token|bot[0-9]+:" || true
+    echo "---- RSSHub 日志 ----"
+    docker compose logs --tail 20 rsshub 2>&1 | grep -v -i -E "auth_token|bot[0-9]+:" || true
     exit 0
 fi
 

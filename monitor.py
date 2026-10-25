@@ -195,6 +195,9 @@ def poll_once(db, state):
             log.warning("fetch %s failed: %s", account, e)
             continue
         any_ok = True
+        state["fetches"] = state.get("fetches", 0) + 1
+        if state["fetches"] % 30 == 1:
+            log.info("fetched %s: %d items", account, len(items))
         if not account_initialized(db, account):
             # first run: remember current tweets silently so we don't flood the chat
             for it in items:

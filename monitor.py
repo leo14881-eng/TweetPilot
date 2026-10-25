@@ -196,7 +196,7 @@ def _chatgpt(text):
 
 
 # 免费的在前，ChatGPT 最后（付费，只在前面全部失败时才用）
-TRANSLATORS = [("google", _google), ("microsoft", _microsoft), ("mymemory", _mymemory), ("chatgpt", _chatgpt)]
+TRANSLATORS = [("google", _google), ("mymemory", _mymemory), ("chatgpt", _chatgpt)]
 
 
 def translate_zh(text):

@@ -24,9 +24,10 @@ log = logging.getLogger("tweetpilot.news")
 DEFAULT_RSS = ",".join([
     "美联储公告|https://www.federalreserve.gov/feeds/press_all.xml",
     "美联储讲话|https://www.federalreserve.gov/feeds/speeches.xml",
-    "美国劳工统计局|https://www.bls.gov/feed/bls_latest.rss",
     "CNBC 经济|https://www.cnbc.com/id/20910258/device/rss/rss.html",
     "CNBC 科技|https://www.cnbc.com/id/19854910/device/rss/rss.html",
+    "CoinDesk|https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "The Block|https://www.theblock.co/rss.xml",
 ])
 NEWS_ENABLED = os.environ.get("NEWS_ENABLED", "1") == "1"
 NEWS_POLL_SECONDS = int(os.environ.get("NEWS_POLL_SECONDS", "180"))

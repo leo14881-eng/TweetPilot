@@ -1,0 +1,30 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+
+  rsshub:
+    image: diygod/rsshub:latest
+    restart: always
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: redis
+      REDIS_URL: redis://redis:6379/
+      CACHE_EXPIRE: "45"
+      TWITTER_AUTH_TOKEN: ${TWITTER_AUTH_TOKEN}
+    depends_on: [redis]
+    # 只在本机内部使用，不对公网开放端口
+
+  monitor:
+    image: python:3.12-slim
+    restart: always
+    working_dir: /app
+    command: python -u monitor.py
+    env_file: .env
+    environment:
+      RSSHUB_URL: http://rsshub:1200
+      DB_PATH: /data/state.db
+    volumes:
+      - ./monitor.py:/app/monitor.py:ro
+      - ./data:/data
+    depends_on: [rsshub]

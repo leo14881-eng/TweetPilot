@@ -37,6 +37,8 @@ if [ "$MODE" = "--status" ]; then
     docker compose exec -T monitor python - <<'PY' 2>&1 | grep -v -i -E "auth_token|bot[0-9]+:" || true
 import monitor as m
 for name, fn in m.TRANSLATORS:
+    if name == "chatgpt" and not m.OPENAI_API_KEY:
+        print("翻译测试 chatgpt: 未配置（可选）"); continue
     try: print(f"翻译测试 {name}: {fn('The rocket launch was a success.')}")
     except Exception as e: print(f"翻译测试 {name}: 失败 {e}")
 for a in m.ACCOUNTS:

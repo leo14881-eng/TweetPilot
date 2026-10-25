@@ -172,7 +172,31 @@ def _mymemory(text):
     return "".join(out)
 
 
-TRANSLATORS = [("google", _google), ("microsoft", _microsoft), ("mymemory", _mymemory)]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+
+
+def _chatgpt(text):
+    """Paid fallback, only used when every free service failed."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("未配置 OPENAI_API_KEY")
+    body = json.dumps({
+        "model": OPENAI_MODEL,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": "把用户发来的推文翻译成简体中文。只输出译文，保留人名、币种代码和链接原样，不要解释。"},
+            {"role": "user", "content": text},
+        ],
+    }).encode()
+    data = json.loads(_http(OPENAI_BASE_URL + "/chat/completions", body,
+                            {"Authorization": "Bearer " + OPENAI_API_KEY, "Content-Type": "application/json"},
+                            timeout=60))
+    return data["choices"][0]["message"]["content"]
+
+
+# 免费的在前，ChatGPT 最后（付费，只在前面全部失败时才用）
+TRANSLATORS = [("google", _google), ("microsoft", _microsoft), ("mymemory", _mymemory), ("chatgpt", _chatgpt)]
 
 
 def translate_zh(text):

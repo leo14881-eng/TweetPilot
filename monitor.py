@@ -332,11 +332,18 @@ def main():
         if send_telegram(f"🐦 推特监听名单：{names}。有新推文才会推送，平时不打扰。"):
             db.execute("INSERT OR REPLACE INTO meta VALUES ('notified_accounts', ?)", (names,))
             db.commit()
+    import news  # 经济 / 科技 / 加密要闻（需要 OPENAI_API_KEY）
+    news.init_db(db)
+    log.info("news module: %s", "on" if news.enabled() else "off (no OPENAI_API_KEY or NEWS_ENABLED=0)")
     while True:
         try:
             poll_once(db, state)
         except Exception as e:
             log.exception("poll error: %s", e)
+        try:
+            news.poll(db, state)
+        except Exception as e:
+            log.exception("news error: %s", e)
         time.sleep(POLL_SECONDS)
 
 

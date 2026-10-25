@@ -35,5 +35,6 @@ services:
       DB_PATH: /data/state.db
     volumes:
       - ./monitor.py:/app/monitor.py:ro
+      - ./news.py:/app/news.py:ro
       - ./data:/data
     depends_on: [rsshub]

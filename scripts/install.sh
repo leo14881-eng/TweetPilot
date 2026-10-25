@@ -41,6 +41,14 @@ for name, fn in m.TRANSLATORS:
         print("翻译测试 chatgpt: 未配置（可选）"); continue
     try: print(f"翻译测试 {name}: {fn('The rocket launch was a success.')}")
     except Exception as e: print(f"翻译测试 {name}: 失败 {e}")
+import news
+print(f"要闻模块：{'开启' if news.enabled() else '关闭（没有 OPENAI_API_KEY）'}")
+for name, url in news.sources():
+    try:
+        its = news.parse_generic_feed(m._http(url, timeout=30), name)
+        print(f"要闻来源 {name}: 读到 {len(its)} 条" + (f"，最新：{its[0]['title'][:40]}" if its else ""))
+    except Exception as e:
+        print(f"要闻来源 {name}: 失败 {e}")
 for a in m.ACCOUNTS:
     try:
         items = m.parse_feed(m.http_get(m.feed_url(a), timeout=60))

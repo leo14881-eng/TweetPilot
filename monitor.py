@@ -320,8 +320,18 @@ def main():
     db = open_db(DB_PATH)
     state = {"last_ok": time.time(), "alerted": False}
     log.info("watching %s every %ss", ACCOUNTS, POLL_SECONDS)
+    # 启动通知只在监听名单变化时发一次，平时重启（自动更新）不打扰
     names = "、".join(DISPLAY_NAMES.get(a, a) for a in ACCOUNTS)
-    send_telegram(f"🐦 推特监听已启动：{names}，每 {POLL_SECONDS} 秒检查一次新推文。")
+    row = db.execute("SELECT v FROM meta WHERE k='notified_accounts'").fetchone()
+    if not row and db.execute("SELECT 1 FROM seen LIMIT 1").fetchone():
+        # 已经在运行的老安装：记下当前名单，不再重复发启动消息
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('notified_accounts', ?)", (names,))
+        db.commit()
+        row = (names,)
+    if not row or row[0] != names:
+        if send_telegram(f"🐦 推特监听名单：{names}。有新推文才会推送，平时不打扰。"):
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('notified_accounts', ?)", (names,))
+            db.commit()
     while True:
         try:
             poll_once(db, state)

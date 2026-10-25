@@ -25,6 +25,8 @@ for _part in os.environ.get("ACCOUNTS", "elonmusk:马斯克,cz_binance:赵长鹏
 ACCOUNTS = list(DISPLAY_NAMES)
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 EXCLUDE_REPLIES = os.environ.get("EXCLUDE_REPLIES", "1") == "1"
+INCLUDE_RETWEETS = os.environ.get("INCLUDE_RETWEETS", "0") == "1"
+MAX_AGE_MINUTES = int(os.environ.get("MAX_AGE_MINUTES", "120"))
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 DB_PATH = os.environ.get("DB_PATH", "/data/state.db")
@@ -73,9 +75,28 @@ def http_get(url, timeout=30):
 
 
 def feed_url(account):
-    params = "excludeReplies=1" if EXCLUDE_REPLIES else ""
+    params = []
+    if EXCLUDE_REPLIES:
+        params.append("excludeReplies=1")
+    if not INCLUDE_RETWEETS:
+        params.append("includeRts=false")
     base = f"{RSSHUB_URL}/twitter/user/{urllib.parse.quote(account)}"
-    return f"{base}/{params}" if params else base
+    return f"{base}/{'&'.join(params)}" if params else base
+
+
+RT_RE = re.compile(r"^\s*RT\b")
+
+
+def is_retweet(item):
+    return bool(RT_RE.match(item.get("title", "")) or RT_RE.match(item.get("text", "")))
+
+
+def age_minutes(item):
+    try:
+        dt = datetime.strptime(item["pub"], "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 60
+    except Exception:
+        return 0
 
 
 STATUS_RE = re.compile(r"/status/(\d+)")
@@ -109,24 +130,65 @@ def parse_feed(xml_bytes):
             "link": to_x_link(link),
             "text": html_to_text(it.findtext("description") or it.findtext("title") or ""),
             "pub": (it.findtext("pubDate") or "").strip(),
+            "title": (it.findtext("title") or "").strip(),
         })
     return items
 
 
-# ---------- translation (free Google endpoint, no key) ----------
+# ---------- translation (free, no key; tried in order) ----------
+
+def _http(url, data=None, headers=None, timeout=20):
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "Mozilla/5.0", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _google(text):
+    body = urllib.parse.urlencode({"q": text}).encode()
+    url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t"
+    data = json.loads(_http(url, body, {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}))
+    return "".join(seg[0] for seg in data[0] if seg and seg[0])
+
+
+_ms_token = {"value": "", "at": 0}
+
+
+def _microsoft(text):
+    if time.time() - _ms_token["at"] > 8 * 60:
+        _ms_token["value"] = _http("https://edge.microsoft.com/translate/auth").decode().strip()
+        _ms_token["at"] = time.time()
+    url = "https://api-edge.cognitive.microsofttranslator.com/translate?to=zh-Hans&api-version=3.0"
+    data = json.loads(_http(url, json.dumps([{"Text": text}]).encode(),
+                            {"Authorization": "Bearer " + _ms_token["value"], "Content-Type": "application/json"}))
+    return data[0]["translations"][0]["text"]
+
+
+def _mymemory(text):
+    out = []
+    for i in range(0, len(text), 450):  # this service takes ~500 chars per request
+        q = urllib.parse.urlencode({"q": text[i:i + 450], "langpair": "en|zh-CN"})
+        data = json.loads(_http("https://api.mymemory.translated.net/get?" + q))
+        out.append(data["responseData"]["translatedText"])
+    return "".join(out)
+
+
+TRANSLATORS = [("google", _google), ("microsoft", _microsoft), ("mymemory", _mymemory)]
+
 
 def translate_zh(text):
+    """Returns Chinese text, or "" when every free service failed (the push then shows the original only)."""
     if not text:
         return ""
-    if re.search(r"[一-鿿]", text) and len(re.findall(r"[一-鿿]", text)) > len(text) * 0.3:
+    if len(re.findall(r"[\u4e00-\u9fff]", text)) > len(text) * 0.3:
         return text  # already mostly Chinese
-    q = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": "zh-CN", "dt": "t", "q": text})
-    try:
-        data = json.loads(http_get("https://translate.googleapis.com/translate_a/single?" + q, timeout=20))
-        return "".join(seg[0] for seg in data[0] if seg and seg[0]).strip()
-    except Exception as e:  # translation is best-effort
-        log.warning("translate failed: %s", e)
-        return "（翻译暂不可用）"
+    for name, fn in TRANSLATORS:
+        try:
+            zh = (fn(text) or "").strip()
+            if zh and zh != text:
+                return zh
+        except Exception as e:
+            log.warning("translate via %s failed: %s", name, e)
+    return ""
 
 
 # ---------- telegram ----------
@@ -179,6 +241,8 @@ def build_message(account, item, zh):
     parts = [f"🐦 <b>{html.escape(name)}</b> @{html.escape(account)}" + (f"  {when}（越南时间）" if when else "")]
     if zh and zh != orig:
         parts.append("🇨🇳 " + html.escape(zh))
+    else:
+        parts.append("🇨🇳 （翻译暂时失败，以下是原文）")
     parts.append("📝 " + html.escape(orig))
     parts.append(f'🔗 <a href="{html.escape(item["link"])}">打开原帖</a>')
     return "\n\n".join(parts)
@@ -207,6 +271,10 @@ def poll_once(db, state):
             continue
         for it in sorted(items, key=lambda x: int(x["id"])):
             if is_seen(db, it["id"]):
+                continue
+            if (not INCLUDE_RETWEETS and is_retweet(it)) or age_minutes(it) > MAX_AGE_MINUTES:
+                mark_seen(db, it["id"], account)  # retweet or old tweet: skip silently
+                log.info("skipped %s %s (%s)", account, it["id"], "retweet" if is_retweet(it) else "old")
                 continue
             msg = build_message(account, it, translate_zh(it["text"]))
             if send_telegram(msg):

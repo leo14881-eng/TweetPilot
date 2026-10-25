@@ -36,6 +36,9 @@ if [ "$MODE" = "--status" ]; then
     echo "---- 读取测试（每个账号最近的推文数）----"
     docker compose exec -T monitor python - <<'PY' 2>&1 | grep -v -i -E "auth_token|bot[0-9]+:" || true
 import monitor as m
+for name, fn in m.TRANSLATORS:
+    try: print(f"翻译测试 {name}: {fn('The rocket launch was a success.')}")
+    except Exception as e: print(f"翻译测试 {name}: 失败 {e}")
 for a in m.ACCOUNTS:
     try:
         items = m.parse_feed(m.http_get(m.feed_url(a), timeout=60))

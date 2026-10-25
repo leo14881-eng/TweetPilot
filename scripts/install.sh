@@ -2,8 +2,10 @@
 # TweetPilot 服务器安装 / 更新（Ubuntu，root 运行，可重复运行）。
 #   1. 没有 Docker 就安装 Docker。
 #   2. 拉取 GitHub 最新代码到 /opt/tweetpilot。
-#   3. 生成 .env：Telegram 机器人复用 TrendPilot 的配置（不输出内容）；
-#      X 小号凭证读 /opt/tweetpilot/secret/x-auth-token.txt（由电脑上传，不输出内容）。
+#   3. 生成 .env（不输出任何凭证）：
+#      X 小号凭证      /opt/tweetpilot/secret/x-auth-token.txt
+#      Telegram 机器人  /opt/tweetpilot/secret/telegram-bot-token.txt（TweetPilot 专用机器人）
+#      Telegram 聊天 ID /opt/tweetpilot/secret/telegram-chat-id.txt（没有就自动获取：先给机器人发一条消息）
 #   4. 凭证齐全才启动；否则只说明缺什么。
 # 用法：bash install.sh          安装或更新并启动
 #       bash install.sh --auto   定时自动更新（cron 调用）
@@ -12,8 +14,9 @@ set -euo pipefail
 
 APP_DIR=/opt/tweetpilot
 REPO_URL=https://github.com/leo14881-eng/TweetPilot.git
-TP_CONFIG=/opt/trendpilot/config/application-local.yml
 TOKEN_FILE="$APP_DIR/secret/x-auth-token.txt"
+BOT_FILE="$APP_DIR/secret/telegram-bot-token.txt"
+CHAT_FILE="$APP_DIR/secret/telegram-chat-id.txt"
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行"; exit 1; }
 
@@ -47,13 +50,24 @@ mkdir -p "$APP_DIR/secret" "$APP_DIR/data"
 chmod 700 "$APP_DIR/secret"
 [ "${1:-}" = "--auto" ] || echo "代码已更新到 $(git -C "$APP_DIR" rev-parse --short HEAD)"
 
-yml_value() {  # 从 TrendPilot 配置读一个键的值，不输出到日志
-    sed -n "s/^[[:space:]]*$1:[[:space:]]*[\"']\{0,1\}\([^\"'[:space:]#]*\).*/\1/p" "$TP_CONFIG" | head -1
-}
+read_secret() { tr -d '\r\n ' < "$1"; }
+
+# 没有聊天 ID 时，从机器人最近收到的消息里自动取（需要先给机器人发过一条消息）
+if [ -s "$BOT_FILE" ] && [ ! -s "$CHAT_FILE" ]; then
+    curl -fsS -m 20 "https://api.telegram.org/bot$(read_secret "$BOT_FILE")/getUpdates" 2>/dev/null \
+        | python3 -c 'import json,sys
+r=json.load(sys.stdin).get("result",[])
+ids=[str((u.get("message") or u.get("channel_post") or {}).get("chat",{}).get("id","")) for u in r]
+ids=[i for i in ids if i]
+print(ids[-1] if ids else "")' > "$CHAT_FILE.tmp" 2>/dev/null || true
+    if [ -s "$CHAT_FILE.tmp" ]; then mv "$CHAT_FILE.tmp" "$CHAT_FILE"; echo "已自动获取 Telegram 聊天 ID"
+    else rm -f "$CHAT_FILE.tmp"; fi
+fi
 
 missing=""
-[ -f "$TP_CONFIG" ] || missing="$missing TrendPilot 配置（Telegram 机器人）"
 [ -s "$TOKEN_FILE" ] || missing="$missing X 小号凭证"
+[ -s "$BOT_FILE" ] || missing="$missing Telegram 机器人 token"
+[ -s "$CHAT_FILE" ] || missing="$missing Telegram 聊天 ID（请先在 Telegram 里给新机器人发一条消息，再重新运行）"
 
 if [ -n "$missing" ]; then
     [ "${1:-}" = "--auto" ] || echo "暂不启动，缺少：$missing"
@@ -63,9 +77,9 @@ fi
 umask 077
 {
     grep -v -E '^(TWITTER_AUTH_TOKEN|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID)=' "$APP_DIR/.env.example" | grep -v '^#' | grep -v '^$'
-    echo "TWITTER_AUTH_TOKEN=$(tr -d '\r\n ' < "$TOKEN_FILE")"
-    echo "TELEGRAM_BOT_TOKEN=$(yml_value bot-token)"
-    echo "TELEGRAM_CHAT_ID=$(yml_value chat-id)"
+    echo "TWITTER_AUTH_TOKEN=$(read_secret "$TOKEN_FILE")"
+    echo "TELEGRAM_BOT_TOKEN=$(read_secret "$BOT_FILE")"
+    echo "TELEGRAM_CHAT_ID=$(read_secret "$CHAT_FILE")"
 } > "$APP_DIR/.env"
 
 cd "$APP_DIR"

@@ -18,7 +18,7 @@
 
 ## 部署
 
-运行在跑 TrendPilot 的云服务器上，目录 `/opt/tweetpilot`。Telegram 机器人复用 TrendPilot 的配置。
+运行在跑 TrendPilot 的云服务器上，目录 `/opt/tweetpilot`。Telegram 使用 TweetPilot 专用机器人，凭证放在服务器 `/opt/tweetpilot/secret/`。
 
 X 小号凭证放在服务器 `/opt/tweetpilot/secret/x-auth-token.txt`（不进 git）。
 

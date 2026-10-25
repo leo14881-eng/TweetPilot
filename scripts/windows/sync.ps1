@@ -93,15 +93,6 @@ if ($ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { Log "服务器 IP 无效：$ip"; 
 if (-not (Test-Path $Key) -or -not (Test-Path $Ssh)) { Log '无法连接：SSH 密钥或系统自带的 ssh 不存在'; exit 0 }
 $opts = "-i `"$Key`" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o `"UserKnownHostsFile=$KnownHosts`" -o ConnectTimeout=20 -o ServerAliveInterval=30"
 
-# ---------- 运行状态 ----------
-if ($wantStatus) {
-    Remove-Item $StatusReq -ErrorAction SilentlyContinue
-    $statusFile = Join-Path $Logs 'status.txt'
-    Set-Content -Path $statusFile -Value ('== 服务器状态 {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding UTF8
-    $code = Invoke-Tool $Ssh "$opts root@$ip bash -s" $CmdStatus $statusFile
-    Log "查看状态：退出码 $code"
-}
-
 # ---------- 配置同步 ----------
 if ($changed -or $wantSync) {
     Remove-Item $SyncReq -ErrorAction SilentlyContinue
@@ -123,6 +114,15 @@ if ($changed -or $wantSync) {
         Set-Content -Path $Failed -Value $hash -Encoding ASCII
         Log '同步没有完成，30 分钟后自动再试'
     }
+}
+
+# ---------- 运行状态 ----------
+if ($wantStatus) {
+    Remove-Item $StatusReq -ErrorAction SilentlyContinue
+    $statusFile = Join-Path $Logs 'status.txt'
+    Set-Content -Path $statusFile -Value ('== 服务器状态 {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding UTF8
+    $code = Invoke-Tool $Ssh "$opts root@$ip bash -s" $CmdStatus $statusFile
+    Log "查看状态：退出码 $code"
 }
 
 # 日志只保留最近约 2000 行

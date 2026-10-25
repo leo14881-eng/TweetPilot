@@ -36,6 +36,7 @@ for _part in os.environ.get("NEWS_RSS", DEFAULT_RSS).split(","):
     _name, _, _url = _part.strip().partition("|")
     if _url.strip():
         NEWS_RSS.append((_name.strip() or _url.strip(), _url.strip()))
+WATCH_HOURS = 2  # 快讯等待可靠来源证实的最长时间
 DAILY_DIGEST_HOUR = int(os.environ.get("DAILY_DIGEST_HOUR", "14"))  # Vietnam time; -1 = off
 NEWS_MODEL = os.environ.get("NEWS_MODEL", "").strip() or m.OPENAI_MODEL
 
@@ -51,9 +52,16 @@ EDITOR_PROMPT = """你是给一位加密货币投资者筛选新闻的编辑。�
 
 不推：例行新闻、分析评论和预测、中小公司消息、与加密市场关系不大的新闻，以及“已推送过的事件”里已经报过的同一件事（不同来源或换个说法也算重复）。
 
-非常严格：一天通常只有几条甚至没有。拿不准就不推。只根据候选消息的内容写，不要编造数字。
+准确性（最重要，宁可不推也不能推错）：
+- 每条候选都标了来源类型。「可靠来源」是官方机构或主流媒体，「快讯」是速度快但可能有误的快讯账号。
+- 「快讯」的消息，只有在「可靠来源」（候选里的或“近期可靠来源报道”里的）报道了同一件事、关键事实和数字一致时，才能推送；推送时 summary 以可靠来源为准。
+- 「快讯」里看起来很重要、但还没有可靠来源证实的，不要推送，放进 watch 列表等待证实。
+- 传闻、“据知情人士/据报道/可能/考虑中”之类未经证实的说法、预测、评论，一律不推送，也不放进 watch。
+- 不要编造或推算数字，所有数字必须和来源原文一致。
 
-只输出 JSON：{"push":[{"i":候选序号,"title":"中文一句话标题（不超过 30 字）","summary":"中文 1-2 句要点","impact":"对比特币和加密市场的可能影响，一句话"}]}。没有值得推送的就输出 {"push":[]}。"""
+非常严格：一天通常只有几条甚至没有。拿不准就不推。
+
+只输出 JSON：{"push":[{"i":候选序号,"title":"中文一句话标题（不超过 30 字）","summary":"中文 1-2 句要点","impact":"对比特币和加密市场的可能影响，一句话","confirmed_by":"证实它的可靠来源名称"}],"watch":[快讯候选序号]}。没有就输出 {"push":[],"watch":[]}。"""
 
 DIGEST_PROMPT = """下面是过去 24 小时推送给用户的重要新闻（按时间顺序）。请写一份中文汇总，给一位加密货币投资者起床后快速浏览：
 1. 开头一句话总结今天对加密市场最重要的事
@@ -66,7 +74,45 @@ DIGEST_PROMPT = """下面是过去 24 小时推送给用户的重要新闻（按
 
 def init_db(db):
     db.execute("CREATE TABLE IF NOT EXISTS news_pushed (ts REAL, title TEXT, summary TEXT, source TEXT, link TEXT)")
+    # 最近收到的所有消息（用来核实快讯）和等待证实的快讯
+    db.execute("CREATE TABLE IF NOT EXISTS news_recent (id TEXT PRIMARY KEY, ts REAL, item TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS news_watch (id TEXT PRIMARY KEY, ts REAL, item TEXT)")
     db.commit()
+
+
+def _dump(it):
+    d = dict(it)
+    d["pub_dt"] = it["pub_dt"].isoformat() if it["pub_dt"] else None
+    return json.dumps(d, ensure_ascii=False)
+
+
+def _load(txt):
+    d = json.loads(txt)
+    d["pub_dt"] = datetime.fromisoformat(d["pub_dt"]) if d.get("pub_dt") else None
+    return d
+
+
+def remember(db, items):
+    now = time.time()
+    for it in items:
+        db.execute("INSERT OR REPLACE INTO news_recent VALUES (?,?,?)", (it["id"], now, _dump(it)))
+    db.execute("DELETE FROM news_recent WHERE ts < ?", (now - 3 * 3600,))
+    db.execute("DELETE FROM news_watch WHERE ts < ?", (now - WATCH_HOURS * 3600,))
+    db.commit()
+
+
+def reliable_context(db, exclude_ids):
+    rows = db.execute("SELECT id, item FROM news_recent ORDER BY ts DESC LIMIT 120").fetchall()
+    out = []
+    for rid, txt in rows:
+        it = _load(txt)
+        if rid not in exclude_ids and not is_quick(it["source"]):
+            out.append(it)
+    return out[:60]
+
+
+def watched(db):
+    return [_load(r[0]) for r in db.execute("SELECT item FROM news_watch ORDER BY ts").fetchall()]
 
 
 def recent_pushed(db, hours=24, limit=40):
@@ -133,6 +179,11 @@ def sources():
     return out
 
 
+def is_quick(source):
+    """快讯账号：快但可能有传闻，必须有可靠来源证实才推送"""
+    return source.startswith("X @")
+
+
 def fetch_new(db):
     """New items from all sources (first sight of a source = remember silently)."""
     fresh = []
@@ -176,14 +227,30 @@ def vn_time(dt):
 
 
 def pick_important(db, items):
+    """items: new items + quick items waiting for confirmation. Returns (pushes, watch_items)."""
     done = recent_pushed(db)
+    ctx = reliable_context(db, {it["id"] for it in items})
     lines = ["已推送过的事件（过去 24 小时）："] + ([f"- {r[1]}" for r in done] or ["（无）"])
+    lines.append("\n近期可靠来源报道（过去 3 小时，只用来核实快讯，不要推送这些）：")
+    lines += [f"- [{it['source']} {vn_time(it['pub_dt'])}] {it['title']}：{it['text'][:200]}" for it in ctx] or ["（无）"]
     lines.append("\n候选消息：")
     for i, it in enumerate(items):
-        lines.append(f"[{i}] 来源：{it['source']}  时间：{vn_time(it['pub_dt'])}\n标题：{it['title']}\n内容：{it['text'][:400]}")
-    reply = chat(EDITOR_PROMPT, "\n".join(lines), json_mode=True)
-    picked = json.loads(reply).get("push", [])
-    return [(items[p["i"]], p) for p in picked if isinstance(p.get("i"), int) and 0 <= p["i"] < len(items)]
+        kind = "快讯" if is_quick(it["source"]) else "可靠来源"
+        lines.append(f"[{i}] 来源类型：{kind}  来源：{it['source']}  时间：{vn_time(it['pub_dt'])}\n"
+                     f"标题：{it['title']}\n内容：{it['text'][:400]}")
+    reply = json.loads(chat(EDITOR_PROMPT, "\n".join(lines), json_mode=True))
+    pushes = []
+    for p in reply.get("push", []):
+        i = p.get("i")
+        if not isinstance(i, int) or not 0 <= i < len(items):
+            continue
+        it = items[i]
+        if is_quick(it["source"]) and not str(p.get("confirmed_by", "")).strip():
+            continue  # 快讯没有写明证实来源：不推
+        pushes.append((it, p))
+    watch = [items[i] for i in reply.get("watch", []) if isinstance(i, int) and 0 <= i < len(items)
+             and is_quick(items[i]["source"])]
+    return pushes, watch
 
 
 def build_news_message(it, p):
@@ -192,7 +259,10 @@ def build_news_message(it, p):
         parts.append(html.escape(p["summary"].strip()))
     if p.get("impact"):
         parts.append("📈 可能影响：" + html.escape(p["impact"].strip()) + "（判断，不是确定结论）")
-    src = f"来源：{html.escape(it['source'])}" + (f"  {vn_time(it['pub_dt'])}（越南时间）" if it["pub_dt"] else "")
+    src = f"来源：{html.escape(it['source'])}"
+    if p.get("confirmed_by") and is_quick(it["source"]):
+        src += f"（已由 {html.escape(str(p['confirmed_by']))} 证实）"
+    src = src + (f"  {vn_time(it['pub_dt'])}（越南时间）" if it["pub_dt"] else "")
     if it["link"]:
         src += f'\n🔗 <a href="{html.escape(it["link"])}">打开原文</a>'
     parts.append(src)
@@ -209,21 +279,30 @@ def poll(db, state):
     if not enabled() or time.time() - state.get("news_last", 0) < NEWS_POLL_SECONDS:
         return
     state["news_last"] = time.time()
-    items = fetch_new(db)
-    if items:
-        for start in range(0, len(items), 40):   # keep each ChatGPT call small
-            batch = items[start:start + 40]
-            try:
-                picked = pick_important(db, batch)
-            except Exception as e:
-                log.warning("news editor failed: %s", e)
-                continue
-            log.info("news: %d new, %d picked", len(batch), len(picked))
-            for it, p in picked:
-                if m.send_telegram(build_news_message(it, p)):
-                    db.execute("INSERT INTO news_pushed VALUES (?,?,?,?,?)",
-                               (time.time(), p.get("title", ""), p.get("summary", ""), it["source"], it["link"]))
-                    db.commit()
+    new = fetch_new(db)
+    remember(db, new)
+    waiting = [w for w in watched(db) if w["id"] not in {n["id"] for n in new}]
+    # 没有新消息时，只有在有新的可靠来源报道时才需要重新核实观察中的快讯
+    if not new:
+        daily_digest(db)
+        return
+    candidates = new + waiting
+    for start in range(0, len(candidates), 40):   # keep each ChatGPT call small
+        batch = candidates[start:start + 40]
+        try:
+            picked, watch = pick_important(db, batch)
+        except Exception as e:
+            log.warning("news editor failed: %s", e)
+            continue
+        log.info("news: %d candidates, %d picked, %d watching", len(batch), len(picked), len(watch))
+        for it in watch:
+            db.execute("INSERT OR IGNORE INTO news_watch VALUES (?,?,?)", (it["id"], time.time(), _dump(it)))
+        for it, p in picked:
+            db.execute("DELETE FROM news_watch WHERE id = ?", (it["id"],))
+            if m.send_telegram(build_news_message(it, p)):
+                db.execute("INSERT INTO news_pushed VALUES (?,?,?,?,?)",
+                           (time.time(), p.get("title", ""), p.get("summary", ""), it["source"], it["link"]))
+        db.commit()
     daily_digest(db)
 
 

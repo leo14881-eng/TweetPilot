@@ -1,6 +1,6 @@
 """TweetPilot: watch X accounts via self-hosted RSSHub, translate to Chinese, push to Telegram.
 
-Standard library only. Configuration comes from environment variables (see .env.example).
+Standard library only. Configuration comes from environment variables (see config.example.env).
 """
 import html
 import json
@@ -16,12 +16,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
 RSSHUB_URL = os.environ.get("RSSHUB_URL", "http://rsshub:1200").rstrip("/")
-ACCOUNTS = [a.strip() for a in os.environ.get("ACCOUNTS", "elonmusk,cz_binance,justinsuntron").split(",") if a.strip()]
-DISPLAY_NAMES = json.loads(os.environ.get("DISPLAY_NAMES", json.dumps({
-    "elonmusk": "马斯克",
-    "cz_binance": "赵长鹏",
-    "justinsuntron": "孙宇晨",
-}, ensure_ascii=False)))
+# ACCOUNTS 格式：用户名:中文名，用英文逗号分隔，例如 elonmusk:马斯克,cz_binance:赵长鹏（中文名可省略）
+DISPLAY_NAMES = {}
+for _part in os.environ.get("ACCOUNTS", "elonmusk:马斯克,cz_binance:赵长鹏,justinsuntron:孙宇晨").replace("，", ",").split(","):
+    _user, _, _name = _part.strip().lstrip("@").partition(":")
+    if _user.strip():
+        DISPLAY_NAMES[_user.strip()] = _name.strip() or _user.strip()
+ACCOUNTS = list(DISPLAY_NAMES)
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 EXCLUDE_REPLIES = os.environ.get("EXCLUDE_REPLIES", "1") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
